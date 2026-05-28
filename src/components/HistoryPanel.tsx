@@ -1,6 +1,14 @@
 import React from 'react';
 import { useHistory } from '../store/useHistory';
 
+function formatTs(ts: number): string {
+  const d = new Date(ts);
+  const h = d.getHours().toString().padStart(2, '0');
+  const m = d.getMinutes().toString().padStart(2, '0');
+  const day = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return `${day} ${h}:${m}`;
+}
+
 export const HistoryPanel: React.FC = () => {
   const { snapshots, removeSnapshot, clear } = useHistory();
 
@@ -17,7 +25,9 @@ export const HistoryPanel: React.FC = () => {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
       <div className="history-header">
-        <span style={{ fontSize: '11px', color: '#555' }}>{snapshots.length} capture{snapshots.length !== 1 ? 's' : ''}</span>
+        <span style={{ fontSize: '11px', color: 'var(--text3)' }}>
+          {snapshots.length} capture{snapshots.length !== 1 ? 's' : ''}
+        </span>
         <button className="button-small" onClick={clear}>Clear all</button>
       </div>
 
@@ -44,7 +54,14 @@ export const HistoryPanel: React.FC = () => {
               >✕</button>
             </div>
 
-            <div className="history-label">{snap.item}</div>
+            <div className="history-label">
+              <span style={{ display: 'block', fontWeight: 600, color: 'rgba(255,255,255,0.72)' }}>
+                {snap.item}
+              </span>
+              <span style={{ fontSize: 8, color: 'rgba(255,255,255,0.38)' }}>
+                {formatTs(snap.timestamp)}
+              </span>
+            </div>
           </div>
         ))}
       </div>

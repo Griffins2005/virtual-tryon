@@ -10,11 +10,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@gradio/client": "^2.2.0",
     "@mediapipe/camera_utils": "^0.3.1675466862",
     "@mediapipe/drawing_utils": "^0.3.1675466124",
     "@mediapipe/face_mesh": "^0.4.1633559619",
     "@mediapipe/hands": "^0.4.1675469240",
     "@mediapipe/pose": "^0.5.1675469404",
+    "@mediapipe/tasks-vision": "^0.10.35",
     "framer-motion": "^12.39.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",

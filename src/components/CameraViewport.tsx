@@ -1,55 +1,69 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTracking, type TrackingResults } from '../hooks/useTracking';
 import { renderFrame }    from '../renderers';
 import { useStore }       from '../store/useStore';
 import { useHistory }     from '../store/useHistory';
 import { getItemsByMode } from '../assets/catalog';
+import { ItemChip }       from './ItemThumbnail';
+import { cameraEls }      from '../store/cameraRefs';
+import { preloadSVGs }    from '../utils/AssetGenerator';
+import { sampleSkinTone, resetSkinTone } from '../utils/skinTone';
 
 export const CameraViewport: React.FC = () => {
-  const { mode, selectedItemId, config, cameraActive, detection, setCameraActive } = useStore();
+  const { mode, selectedItemId, config, cameraActive, detection, setCameraActive, setSelectedItem } = useStore();
   const { addSnapshot } = useHistory();
   const overlayCtxRef = useRef<CanvasRenderingContext2D | null>(null);
   const currentItemName = getItemsByMode(mode).find((i) => i.id === selectedItemId)?.name ?? 'Current look';
+  const items = getItemsByMode(mode);
 
+  // Keep mutable refs for values read inside the RAF-driven handleResults callback.
+  // Without this, the running tracking loop captures stale closures and doesn't
+  // pick up mode / item / config changes after the camera starts.
+  const modeRef         = useRef(mode);
+  const selectedItemRef = useRef(selectedItemId);
+  const configRef       = useRef(config);
+  modeRef.current         = mode;          // sync every render
+  selectedItemRef.current = selectedItemId;
+  configRef.current       = config;
+
+  // Stable callback — never changes identity, always reads latest via refs above
   const handleResults = useCallback(
     ({ faceLandmarks, poseLandmarks, handLandmarks, W, H }: TrackingResults) => {
+      window.dispatchEvent(new CustomEvent('tracking-results', { detail: { poseLandmarks } }));
       if (!overlayCtxRef.current || !faceLandmarks) return;
-      renderFrame(overlayCtxRef.current, faceLandmarks, W, H, mode, selectedItemId ?? '', config, poseLandmarks, handLandmarks);
+      // Sample skin tone from video every ~10 s for adaptive makeup rendering
+      if (videoRef.current) {
+        sampleSkinTone(videoRef.current, faceLandmarks, W, H);
+      }
+      renderFrame(
+        overlayCtxRef.current, faceLandmarks, W, H,
+        modeRef.current, selectedItemRef.current ?? '', configRef.current,
+        poseLandmarks, handLandmarks
+      );
     },
-    [mode, selectedItemId, config]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [] // intentionally stable — reads latest values via refs above
   );
 
   const { videoRef, canvasRef, startCamera, stopCamera } = useTracking(handleResults);
-  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [cameraError, setError] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
-  const placeholderText = cameraError
-    ? 'Camera unavailable — check permission, lighting, and retry.'
-    : 'Click Start Camera to begin virtual try-on.';
-  const readinessText = cameraActive
-    ? detection.detected
-      ? 'Face lock engaged. Small head moves improve fit.'
-      : 'Face not detected yet — keep your head centered.'
-    : 'Allow camera access and use soft front lighting for best results.';
 
-  const handleStart = async () => {
-    setCameraError(null);
-    setIsStarting(true);
-    const error = await startCamera();
-    setIsStarting(false);
+  // Preload SVG assets for the selected item whenever mode or item changes
+  useEffect(() => {
+    if (!selectedItemId) return;
+    const item = getItemsByMode(mode).find(i => i.id === selectedItemId);
+    if (item?.colors?.length) preloadSVGs(selectedItemId, item.colors);
+  }, [mode, selectedItemId]);
 
-    if (error) {
-      setCameraError(error);
-      return;
-    }
+  // Expose live elements to HDTryOnPanel via the module-level store
+  useEffect(() => {
+    cameraEls.video  = videoRef.current;
+    cameraEls.canvas = canvasRef.current;
+    return () => { cameraEls.video = null; cameraEls.canvas = null; };
+  });
 
-    if (canvasRef.current) overlayCtxRef.current = canvasRef.current.getContext('2d');
-  };
-
-  const handleStop  = () => {
-    stopCamera(); overlayCtxRef.current = null; setCameraActive(false); setCameraError(null);
-  };
-
-  const handleCapture = () => {
+  const doCapture = useCallback(() => {
     const video = videoRef.current; const canvas = canvasRef.current;
     if (!video || !canvas) return;
     const merged = document.createElement('canvas');
@@ -61,11 +75,36 @@ export const CameraViewport: React.FC = () => {
     const itemName = getItemsByMode(mode).find(i => i.id === selectedItemId)?.name ?? selectedItemId ?? '?';
     addSnapshot({ id: `snap-${Date.now()}`, dataUrl, mode, item: itemName, timestamp: Date.now() });
     const a = document.createElement('a'); a.download = `tryon-${Date.now()}.png`; a.href = dataUrl; a.click();
+  }, [videoRef, canvasRef, mode, selectedItemId, addSnapshot]);
+
+  // Mobile nav capture event
+  useEffect(() => {
+    const handler = () => { if (cameraActive) doCapture(); };
+    window.addEventListener('mob-capture', handler);
+    return () => window.removeEventListener('mob-capture', handler);
+  }, [cameraActive, doCapture]);
+
+  const handleStart = async () => {
+    setError(null);
+    setIsStarting(true);
+    const error = await startCamera();
+    setIsStarting(false);
+    if (error) { setError(error); return; }
+    if (canvasRef.current) overlayCtxRef.current = canvasRef.current.getContext('2d');
+  };
+
+  const handleStop = () => {
+    stopCamera(); overlayCtxRef.current = null; setCameraActive(false); setError(null);
+    resetSkinTone();
   };
 
   const modeLabel: Record<string, string> = {
     glasses: 'FaceMesh', makeup: 'FaceMesh 468pt', clothing: 'Pose + FaceMesh', accessories: 'Hands + FaceMesh',
   };
+
+  const placeholderText = cameraError
+    ? 'Camera unavailable — check permissions and retry.'
+    : 'Start the camera to try on items in real time.';
 
   return (
     <div className="camera-stage">
@@ -74,62 +113,72 @@ export const CameraViewport: React.FC = () => {
           <video ref={videoRef} className="camera-video" style={{ display: cameraActive ? 'block' : 'none' }} autoPlay playsInline muted />
           <canvas ref={canvasRef} className="camera-canvas" style={{ display: cameraActive ? 'block' : 'none' }} />
 
-          {/* Corner deco */}
-          {(['tl','tr','bl','br'] as const).map(pos => (
-            <div key={pos} style={{ position:'absolute', width:26, height:26,
-              top: pos[0]==='t'?14:undefined, bottom: pos[0]==='b'?14:undefined,
-              left: pos[1]==='l'?14:undefined, right: pos[1]==='r'?14:undefined,
-              borderTop:    pos[0]==='t'?'2px solid #c8ff00':undefined,
-              borderBottom: pos[0]==='b'?'2px solid #c8ff00':undefined,
-              borderLeft:   pos[1]==='l'?'2px solid #c8ff00':undefined,
-              borderRight:  pos[1]==='r'?'2px solid #c8ff00':undefined,
-              borderRadius: pos==='tl'?'4px 0 0 0':pos==='tr'?'0 4px 0 0':pos==='bl'?'0 0 0 4px':'0 0 4px 0',
-            }} />
-          ))}
+          {/* Corner brackets */}
+          <div className="camera-corner camera-corner--tl" />
+          <div className="camera-corner camera-corner--tr" />
+          <div className="camera-corner camera-corner--bl" />
+          <div className="camera-corner camera-corner--br" />
 
           {cameraActive && (
-            <div className="detection-badge">
-              <span
-                style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: '50%',
-                  display: 'inline-block',
-                  background: detection.detected ? '#c8ff00' : '#444',
-                  boxShadow: detection.detected ? '0 0 6px #c8ff00' : 'none',
-                }}
-              />
-              <span style={{ fontSize: '11px', fontWeight: 500, color: detection.detected ? '#c8ff00' : '#666' }}>
+            <div className="cam-badge detection-badge">
+              <span className={`dot-status ${detection.detected ? 'dot-status--on' : 'dot-status--off'}`} />
+              <span style={{ color: detection.detected ? 'var(--accent)' : 'var(--text3)' }}>
                 {detection.detected ? 'Detected' : 'Scanning...'}
               </span>
-              {detection.fps > 0 && <span style={{ fontSize: '10px', color: '#444', marginLeft: 4 }}>{detection.fps} fps</span>}
+              {detection.fps > 0 && (
+                <span style={{ color: 'var(--text3)', marginLeft: 3 }}>{detection.fps} fps</span>
+              )}
             </div>
           )}
 
-          {cameraActive && <div className="mode-badge">{modeLabel[mode] ?? mode}</div>}
-          {cameraActive && <div className="item-badge">{currentItemName}</div>}
+          {cameraActive && <div className="cam-badge mode-badge">{modeLabel[mode] ?? mode}</div>}
+          {cameraActive && <div className="cam-badge item-badge">{currentItemName}</div>}
 
           {!cameraActive && (
             <div className="camera-placeholder">
-              <div className="placeholder-emoji">◎</div>
+              <div className="placeholder-icon">◎</div>
               <p className="placeholder-text">{placeholderText}</p>
-              <button className={`button-primary ${isStarting ? 'button-disabled' : ''}`} onClick={handleStart} disabled={isStarting}>
-                {isStarting ? '◐ Starting camera...' : '▶ Start Camera'}
+              <button
+                className={`button-primary ${isStarting ? 'button-disabled' : ''}`}
+                onClick={handleStart}
+                disabled={isStarting}
+              >
+                {isStarting ? '◐ Starting...' : '▶ Start Camera'}
               </button>
-              <p className="placeholder-text" style={{ color: '#777', fontSize: '11px', maxWidth: '82%' }}>{readinessText}</p>
+              <p className="placeholder-hint">
+                Allow camera access — soft front lighting gives the best results.
+              </p>
             </div>
           )}
+
           {cameraError && <div className="error-banner">{cameraError}</div>}
         </div>
       </div>
 
+      {/* Mobile items strip */}
+      <div className="mobile-items-strip">
+        {items.map(item => (
+          <ItemChip
+            key={item.id}
+            item={item}
+            selected={selectedItemId === item.id}
+            onClick={() => setSelectedItem(item.id)}
+          />
+        ))}
+      </div>
+
+      {/* Desktop footer */}
       <div className="camera-footer">
         {!cameraActive ? (
           <>
-            <button className={`button-primary ${isStarting ? 'button-disabled' : ''}`} onClick={handleStart} disabled={isStarting}>
+            <button
+              className={`button-primary ${isStarting ? 'button-disabled' : ''}`}
+              onClick={handleStart}
+              disabled={isStarting}
+            >
               {isStarting ? '◐ Starting camera...' : '▶ Start Camera'}
             </button>
-            {cameraError && !cameraActive && (
+            {cameraError && (
               <button className="button-outline" onClick={handleStart} disabled={isStarting}>
                 Retry
               </button>
@@ -137,13 +186,12 @@ export const CameraViewport: React.FC = () => {
           </>
         ) : (
           <>
-            <button className="button-outline" onClick={handleCapture}>📸 Capture</button>
-            <div style={{ flex:1 }} />
-            <button onClick={handleStop} className="button-outline">✕ Stop</button>
+            <button className="button-outline" onClick={doCapture}>📸 Capture</button>
+            <div className="camera-footer-spacer" />
+            <button className="button-outline" onClick={handleStop}>✕ Stop</button>
           </>
         )}
       </div>
     </div>
   );
 };
-

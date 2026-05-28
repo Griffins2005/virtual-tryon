@@ -348,3 +348,17 @@ export async function getSVGImage(
     img.src     = svgToDataUrl(svgFn(color));
   });
 }
+
+/** Fire-and-forget preload: warms the cache for an item's first few colors. */
+export function preloadSVGs(itemId: string, colors: string[]): void {
+  const registry: Record<string, ((c: string) => string) | undefined> = {
+    ...CLOTHING_SVG,
+    ...ACCESSORY_SVG,
+  };
+  const fn = registry[itemId];
+  if (!fn) return;
+  // Preload the first 5 colors; rest load on demand
+  colors.slice(0, 5).forEach(color => {
+    getSVGImage(fn, color).catch(() => {});
+  });
+}

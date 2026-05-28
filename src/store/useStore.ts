@@ -51,6 +51,8 @@ export const useStore = create<AppState>((set) => ({
   config: initialState.config,
   cameraActive: false,
   detection: { detected: false, landmarks: null, fps: 0, confidence: 0 },
+  mobileSheet: false,
+  setMobileSheet: (mobileSheet: boolean) => set({ mobileSheet }),
   setMode: (mode: TryOnMode) =>
     set((state) => {
       const nextState = {
